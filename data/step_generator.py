@@ -270,9 +270,13 @@ class TahoeStepGenerator:
         mask = obs["sample"].values == sample
         if COORD_COLS[0] not in obs.columns or COORD_COLS[1] not in obs.columns:
             return torch.rand(n, 2, dtype=torch.float32) * 10.0 - 5.0
-        c = obs.loc[mask, COORD_COLS].to_numpy(dtype=np.float32)
+        c = obs.loc[mask, COORD_COLS].to_numpy(dtype=np.float32).copy()
         if len(c) == 0:
             return torch.rand(n, 2, dtype=torch.float32) * 10.0 - 5.0
+        bad = ~np.isfinite(c).all(axis=1)
+        if bad.any():
+            c[bad] = rng.uniform(
+                -5.0, 5.0, size=(int(bad.sum()), 2)).astype(np.float32)
         idx = rng.choice(len(c), size=n, replace=(len(c) < n))
         return torch.as_tensor(c[idx], dtype=torch.float32)
 

@@ -169,6 +169,17 @@ def main():
             pred_mean = pred.float().mean(dim=1)             # [B, G] fp32
             loss = squared_error_loss(pred_mean, step["target"])
 
+            if not torch.isfinite(loss):
+                bad = {k: bool((v != v).any()) for k, v in step.items()
+                       if isinstance(v, torch.Tensor)}
+                tqdm.write(
+                    f"  [skip nan] {line}: task={step['meta']['task']} "
+                    f"G={step['meta']['G']} B={pred.shape[0]} "
+                    f"loss={loss.item()} nan_tensors={bad}"
+                )
+                opt.zero_grad()
+                continue
+
             opt.zero_grad()
             if scaler is not None:
                 scaler.scale(loss).backward()
