@@ -1,0 +1,72 @@
+# Tahoe-100M Virtual Cell Model — training config
+# Paths point at the local dataset. Override via train.py/evaluate.py --smoke or CLI flags.
+
+paths:
+  merge_data: H:/mtp/Tahoe-100M/merge_data
+  gene_vocab: H:/mtp/Tahoe-100M/metadata/gene_vocabulary.json
+  drug_json: H:/mtp/Tahoe-100M/metadata/Chemcial_info/drug_metadata.json
+  cluster_labels: H:/mtp/Tahoe-100M/metadata/Chemcial_info/drug_cluster_labels_k9.parquet
+  sample_metadata: H:/mtp/Tahoe-100M/metadata/sample_metadata.parquet
+  checkpoint_dir: H:/mtp/Tahoe-100M/checkpoints
+
+sampling:
+  n_chemical_wells: 9        # 1 per k9 cluster, concentrations cycle
+  n_dmso_wells: 2
+  concentrations: [0.05, 0.5, 5.0]
+  seed: 0
+
+data:
+  min_cells: 10              # filter_genes(min_cells) per cell line (NO HVG)
+  exclude_cell_lines: [CVCL_1531, CVCL_1571]   # drop outlier-tiny lines (129/210 cells -> 3k/5.5k genes)
+  max_cells_per_well: null   # smoke: trim each well to first N cells (null = all)
+  max_genes: null            # smoke: cap genes per line (NOT HVG — just a smoke cap; null = all)
+  n_coord_cells: 200         # random cells sampled for cell_coordi
+  source_log1p: true         # log1p source expression before convert_to_distribution
+  target_log1p: true         # target actual = mean log1p(raw counts) over target cells
+  max_cells_for_density: 5000 # cap source cells fed to convert_to_distribution (memory)
+
+step:
+  n_chem: 3                  # target chemicals per step (from the 9 in the batch)
+  n_dmso: 2                  # DMSO control wells per step (each used separately, no mean)
+  task: both                 # control_chem | chem_chem | both
+  max_cells_for_density: 5000 # cap source cells fed to convert_to_distribution (memory)
+
+model:
+  num_of_genes: 62710        # FULL Tahoe-100M gene vocabulary (verified: tokens 3..62712, loader -3 remap)
+  emb_dim: 768
+  chem_coordi_dim: 768
+  chem_conc_dim: 1
+  gene_exp_coordi: 128       # must match convert_to_distribution bins = steps-1 (129-1)
+  coord_dim: 2
+  number_of_heads: 8
+  number_of_layers: 4
+
+train:
+  epochs: 100
+  lr: 1.0e-4
+  weight_decay: 0.01
+  warmup_frac: 0.05
+  grad_clip: 1.0
+  device: null               # null = auto (cuda > mps > cpu); smoke forces cpu
+  amp: bf16                  # mixed precision on CUDA: bf16 (Ampere+) | none (fp32)
+  seed: 0
+  log_every: 5
+  save_every: 20
+
+eval:
+  n_chem: 1                  # chemicals per line in held-out eval step
+  n_dmso: 1
+
+smoke:                       # train.py --smoke overrides (small, fast, memory-safe)
+  max_cells_per_well: 400
+  max_genes: 2000
+  n_coord_cells: 32
+  n_chem: 1
+  n_dmso: 1
+  emb_dim: 128
+  number_of_heads: 2
+  number_of_layers: 1
+  epochs: 1
+  device: cpu
+  log_every: 1
+  max_steps: 8               # early stop after N steps in smoke mode

@@ -1,0 +1,9 @@
+# analysis notebooks / scratch (never pushed)
+bioanalysis/
+extra_util/
+
+# Tahoe-100M dataset — too large for git (see verify.py to check presence)
+merge_data/
+metadata/
+checkpoints/
+*.pt
