@@ -159,6 +159,54 @@ convert_to_dist = convert_to_distribution
 # Shared attention building blocks
 # =====================================================================
 
+def _attention(q, k, v, mask=None, chunk=1024):
+    """Memory-bounded multi-head attention.
+
+    Prefers the accelerated SDPA backends (flash / mem-efficient), which never
+    materialize the full [B, H, N, N] scores matrix. Falls back to a chunked
+    manual attention (query dimension tiled) so the peak scores tensor stays
+    small even on builds where no accelerated kernel exists (e.g. some Windows
+    CUDA builds). Results are numerically equivalent to the plain
+    ``Q·K^T / sqrt(d)`` + softmax + ``·V`` path.
+
+    Parameters
+    ----------
+    q, k, v : torch.Tensor
+        ``[B, H, N, head_dim]`` (or any broadcastable attention shapes).
+    mask : torch.Tensor or None
+        Bool attention mask, ``True`` = attend. Broadcastable to
+        ``[B, H, N, M]`` (e.g. ``[B, 1, 1, M]``).
+    chunk : int
+        Query-tile size used by the fallback path (peak scores elements
+        ``B * H * chunk * M``).
+    """
+    try:
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+        with sdpa_kernel(
+            [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]
+        ):
+            return F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+    except Exception:
+        pass
+
+    B, H, N, _ = q.shape
+    M = k.shape[2]
+    scale = 1.0 / math.sqrt(q.shape[-1])
+    out = torch.empty_like(q)
+    for start in range(0, N, chunk):
+        qc = q[:, :, start : start + chunk]
+        scores = torch.matmul(qc, k.transpose(-2, -1)) * scale
+        if mask is not None:
+            m = mask.bool()
+            while m.dim() < 4:
+                m = m.unsqueeze(-3)
+            m = m.expand(B, H, chunk, M)
+            scores = scores.masked_fill(
+                ~m, torch.finfo(scores.dtype).min)
+        weights = F.softmax(scores, dim=-1)
+        out[:, :, start : start + chunk] = torch.matmul(weights, v)
+    return out
+
 class PerturbationCrossAttention(nn.Module):
     """Multi-head cross-attention where genes (queries) attend over perturbation tokens."""
 
@@ -189,13 +237,7 @@ class PerturbationCrossAttention(nn.Module):
         K = K.view(B, A, self.num_heads, self.head_dim).transpose(1, 2)
         V = V.view(B, A, self.num_heads, self.head_dim).transpose(1, 2)
 
-        attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        mask = mask.bool()
-        mask = mask[:, None, None, :]
-        attn_scores = attn_scores.masked_fill(~mask, torch.finfo(attn_scores.dtype).min)
-
-        attn_weights = F.softmax(attn_scores, dim=-1)
-        attn_output = torch.matmul(attn_weights, V)
+        attn_output = _attention(Q, K, V, mask=mask[:, None, None, :])
         attn_output = attn_output.transpose(1, 2)
         attn_output = attn_output.contiguous().view(B, G, self.dim)
 
@@ -277,19 +319,8 @@ class PerturbationStateAttention(nn.Module):
         K = self.split_heads(K)  # [B, H, C, head_dim]
         V = self.split_heads(V)  # [B, H, C, head_dim]
 
-        # Attention scores: [B, H, G, C]
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)
-
         # 2. Perturbation-token mask (1 = valid, 0 = padding)
-        perturbation_mask = perturbation_mask.bool()          # [B, C]
-        perturbation_mask = perturbation_mask[:, None, None, :]  # [B, 1, 1, C]
-        scores = scores.masked_fill(~perturbation_mask, torch.finfo(scores.dtype).min)
-
-        # 3. Softmax over the perturbation-token dimension
-        weights = F.softmax(scores, dim=-1)
-
-        # 4. Weighted perturbation values
-        cross_output = torch.matmul(weights, V)   # [B, H, G, head_dim]
+        cross_output = _attention(Q, K, V, mask=perturbation_mask[:, None, None, :])
         cross_output = self.merge_heads(cross_output)  # [B, G, D]
 
         cross_output = self.cross_out(cross_output)
@@ -306,12 +337,7 @@ class PerturbationStateAttention(nn.Module):
         K = self.split_heads(K)
         V = self.split_heads(V)
 
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        # NOTE: no perturbation mask here; the mask only applies to the
-        # gene->perturbation cross-attention above.
-        weights = F.softmax(scores, dim=-1)
-
-        output = torch.matmul(weights, V)
+        output = _attention(Q, K, V)
         output = self.merge_heads(output)
         output = self.self_out(output)
         output = self.self_dropout(output)
@@ -360,15 +386,18 @@ class GeneCellCoordinateIntegrationModel(nn.Module):
         # state:  (B, G, gene_dim)
         # coordi: (B, N, coord_dim)
 
-        state = state.unsqueeze(1)      # (B, 1, G, gene_dim)
-        coordi = coordi.unsqueeze(2)    # (B, N, 1, coord_dim)
+        # The shared Linear(gene_dim + coord_dim -> 1) is separable into a
+        # per-gene term plus a per-cell term, so the [B, N, G, D+2] broadcast
+        # is never materialized.
+        w = self.model.weight                      # [1, gene_dim + coord_dim]
+        b = self.model.bias                        # [1]
+        state_term = torch.einsum(
+            "bgd,d->bg", state, w[:, :gene_dim].squeeze(0))      # [B, G]
+        coord_term = torch.einsum(
+            "bnd,d->bn", coordi, w[:, gene_dim:].squeeze(0))     # [B, N]
 
-        # Broadcast across cells and genes:
-        state = state.expand(-1, coordi.shape[1], -1, -1)
-        coordi = coordi.expand(-1, -1, num_genes, -1)
-
-        all_info = torch.cat([state, coordi], dim=-1)  # (B, N, G, gene_dim + coord_dim)
-        output = self.model(all_info).squeeze(-1)      # (B, N, G)
+        # Broadcast to [B, N, G] without building the concatenated tensor.
+        output = state_term[:, None, :] + coord_term[:, :, None] + b[0]
         output = self.act(output)
         return output
 
