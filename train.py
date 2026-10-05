@@ -36,7 +36,12 @@ from tqdm import tqdm                                      # noqa: E402
 
 def load_config(path):
     with open(path) as f:
-        return to_attr_dict(yaml.safe_load(f))
+        cfg = to_attr_dict(yaml.safe_load(f))
+    base = os.path.dirname(os.path.abspath(path))
+    for k, v in cfg["paths"].items():
+        if not os.path.isabs(v):
+            cfg["paths"][k] = os.path.join(base, v)
+    return cfg
 
 
 def resolve_device(device):

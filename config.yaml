@@ -2,12 +2,12 @@
 # Paths point at the local dataset. Override via train.py/evaluate.py --smoke or CLI flags.
 
 paths:
-  merge_data: H:/mtp/Tahoe-100M/merge_data
-  gene_vocab: H:/mtp/Tahoe-100M/metadata/gene_vocabulary.json
-  drug_json: H:/mtp/Tahoe-100M/metadata/Chemcial_info/drug_metadata.json
-  cluster_labels: H:/mtp/Tahoe-100M/metadata/Chemcial_info/drug_cluster_labels_k9.parquet
-  sample_metadata: H:/mtp/Tahoe-100M/metadata/sample_metadata.parquet
-  checkpoint_dir: H:/mtp/Tahoe-100M/checkpoints
+  merge_data: merge_data
+  gene_vocab: metadata/gene_vocabulary.json
+  drug_json: metadata/Chemcial_info/drug_metadata.json
+  cluster_labels: metadata/Chemcial_info/drug_cluster_labels_k9.parquet
+  sample_metadata: metadata/sample_metadata.parquet
+  checkpoint_dir: checkpoints
 
 sampling:
   n_chemical_wells: 9        # 1 per k9 cluster, concentrations cycle
