@@ -134,19 +134,28 @@ def main():
     steps_done = 0
     max_steps = cfg["smoke"].get("max_steps") if args.smoke else None
 
-    for epoch in tqdm(range(cfg["train"]["epochs"]), desc="training"):
+    for epoch in tqdm(range(1, cfg["train"]["epochs"] + 1), desc="epoch"):
+        sel = tqdm(total=1, desc=f"epoch {epoch} - select chemicals", leave=False)
         spec = sampler.select_batch(
             n_chemical=cfg["sampling"]["n_chemical_wells"],
             n_dmso=cfg["sampling"]["n_dmso_wells"],
             concentrations=cfg["sampling"]["concentrations"],
         )
-        batch = gen.load_batch(spec)
-        tqdm.write(f"[epoch {epoch}] batch: {len(batch.lines)} lines, "
-                   f"dmso={spec.dmso_samples}, chem={len(spec.chem_samples)}")
+        sel.update(1)
+        sel.close()
+
+        load = tqdm(
+            spec.all_samples(),
+            desc=f"epoch {epoch} - load parquet & convert",
+            unit="well",
+            leave=False,
+        )
+        batch = gen.load_batch(spec, progress=load)
+        load.close()
 
         lines = list(batch.lines)
         rng.shuffle(lines)
-        pbar = tqdm(lines, desc=f"  epoch {epoch}", unit="step", leave=False)
+        pbar = tqdm(lines, desc=f"epoch {epoch} - training", unit="step", leave=False)
         for line in pbar:
             try:
                 step = gen.make_step(batch, line, rng=rng)
@@ -176,8 +185,8 @@ def main():
             steps_done += 1
 
             pbar.set_postfix_str(
-                f"task={step['meta']['task']} G={step['meta']['G']} "
-                f"B={pred.shape[0]} loss={loss.item():.3f}"
+                f"loss={loss.item():.3f} task={step['meta']['task']} "
+                f"G={step['meta']['G']} B={pred.shape[0]}"
             )
 
             if max_steps and steps_done >= max_steps:

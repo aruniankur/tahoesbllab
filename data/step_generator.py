@@ -54,7 +54,7 @@ class TahoeStepGenerator:
     # ------------------------------------------------------------------
     # batch construction
     # ------------------------------------------------------------------
-    def load_batch(self, spec):
+    def load_batch(self, spec, progress=None):
         max_cells = self.cfg.data.max_cells_per_well
         batch = LoadedBatch(spec)
 
@@ -65,6 +65,8 @@ class TahoeStepGenerator:
             if max_cells:
                 df = df.head(max_cells)
             adatas.append(_df_to_adata(df, self.gene_vocab_df))
+            if progress is not None:
+                progress.update(1)
 
         adata = ad.concat(adatas, axis=0, join="inner", merge="same")
 
@@ -82,6 +84,8 @@ class TahoeStepGenerator:
                 gene_idx = gene_idx[: self.cfg.data.max_genes]
             batch.line_adata[line] = line_ad
             batch.gene_ids[line] = gene_idx
+            if progress is not None:
+                progress.update(1)
 
         batch.lines = sorted(batch.line_adata.keys())
 
@@ -187,6 +191,11 @@ class TahoeStepGenerator:
             cell_coordi.append(self._sample_coords(line_ad, t, rng))
             target.append(batch.targets[(line, t)])
 
+        chem_init = self._pad_embeddings(chem_init)
+        chem_init_mask = self._pad_masks(chem_init_mask)
+        chem_final = self._pad_embeddings(chem_final)
+        chem_final_mask = self._pad_masks(chem_final_mask)
+
         return {
             "gene_ids": gene_ids,
             "gene_exp": torch.stack(gene_exp),
@@ -208,6 +217,24 @@ class TahoeStepGenerator:
                 "pairs": pairs,
             },
         }
+
+    def _pad_embeddings(self, embs):
+        """Pad per-atom embeddings to the max atom count in the list."""
+        max_len = max(e.shape[0] for e in embs)
+        return [
+            e if e.shape[0] == max_len else torch.nn.functional.pad(
+                e, (0, 0, 0, max_len - e.shape[0]))
+            for e in embs
+        ]
+
+    def _pad_masks(self, masks):
+        """Pad attention masks (bool) to the max atom count in the list."""
+        max_len = max(m.shape[0] for m in masks)
+        return [
+            m if m.shape[0] == max_len else torch.nn.functional.pad(
+                m, (0, max_len - m.shape[0]))
+            for m in masks
+        ]
 
     # ------------------------------------------------------------------
     # helpers
